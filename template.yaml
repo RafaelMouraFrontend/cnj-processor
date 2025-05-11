@@ -1,0 +1,193 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Processador de CNJ com Arquitetura Serverless
+
+# Parâmetros configuráveis
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - prod
+    Description: Ambiente de implantação
+
+# Variáveis globais
+Globals:
+  Function:
+    Timeout: 30 # Timeout padrão para lambdas
+    Runtime: nodejs18.x
+    MemorySize: 256
+    Tracing: Active # Habilitar X-Ray para rastreamento
+    Environment:
+      Variables:
+        TABELA_RESULTADOS: !Ref TabelaResultados
+        FILA_PROCESSAMENTO_URL: !Ref FilaProcessamento
+        API_EXTERNA_URL: "https://api-externa.exemplo/cnj" # Substituir pela URL real
+
+Resources:
+  # API Gateway
+  ApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Ref Environment
+      Auth:
+        ApiKeyRequired: true # Segurança básica com API Key
+        UsagePlan:
+          CreateUsagePlan: PER_API
+          Description: Plano de uso para API de processamento CNJ
+          Quota:
+            Limit: 10000
+            Period: DAY
+          Throttle:
+            BurstLimit: 100
+            RateLimit: 50
+      AccessLogSetting:
+        DestinationArn: !GetAtt ApiAccessLogs.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","path":"$context.path","status":"$context.status","responseLatency":"$context.responseLatency"}'
+
+  # Lambda para receber CNJ via API
+  ReceberCnjFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./src
+      Handler: interfaces/lambdas/receberCnj.handler
+      Description: Lambda que recebe CNJ via API Gateway
+      Policies:
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt FilaProcessamento.QueueName
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /cnj
+            Method: POST
+
+  # Lambda para processar CNJ a partir da fila SQS
+  ProcessarCnjFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./src
+      Handler: interfaces/lambdas/processarCnj.handler
+      Description: Lambda que processa CNJ da fila SQS
+      ReservedConcurrentExecutions: 50 # Limite de execuções concorrentes para controle
+      Environment:
+        Variables:
+          TABELA_RESULTADOS: !Ref TabelaResultados
+          FILA_PROCESSAMENTO_URL: !Ref FilaProcessamento
+          API_EXTERNA_URL: !Sub "https://${CnjApiMock}.execute-api.${AWS::Region}.amazonaws.com/dev/cnj"
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TabelaResultados
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt FilaProcessamento.Arn
+            BatchSize: 10
+            MaximumBatchingWindowInSeconds: 30
+
+  # Fila SQS para processamento assíncrono
+  FilaProcessamento:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "cnj-processamento-${Environment}"
+      VisibilityTimeout: 300 # 5 minutos
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt FilaDeadLetter.Arn
+        maxReceiveCount: 3 # Após 3 falhas, vai para DLQ
+
+  # Fila para mensagens com falha
+  FilaDeadLetter:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "cnj-processamento-dlq-${Environment}"
+      MessageRetentionPeriod: 1209600 # 14 dias
+
+  # Tabela DynamoDB para armazenar resultados
+  TabelaResultados:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "cnj-resultados-${Environment}"
+      BillingMode: PAY_PER_REQUEST # Capacidade sob demanda para escalar automaticamente
+      AttributeDefinitions:
+        - AttributeName: cnj
+          AttributeType: S
+      KeySchema:
+        - AttributeName: cnj
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiracao
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  # Grupo de Logs para API Gateway
+  ApiAccessLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/apigateway/cnj-api-${Environment}"
+      RetentionInDays: 30
+
+  # Alarmes de CloudWatch para observabilidade
+  ErrosLambdaReceberCnjAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "cnj-api-erros-${Environment}"
+      AlarmDescription: Alarme para erros na Lambda de recebimento de CNJ
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ReceberCnjFunction
+
+  # API Mock para simulação da API externa
+  CnjApiMock:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: dev
+      Description: API mock para simular serviço externo de consulta CNJ
+      EndpointConfiguration: REGIONAL
+      TracingEnabled: true
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          LoggingLevel: INFO
+
+  # Função Lambda para o mock da API
+  MockCnjApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/mocks/cnj/api/
+      Handler: index.handler
+      Runtime: nodejs18.x
+      MemorySize: 128
+      Timeout: 5
+      Description: Simula API externa para consulta de CNJ
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref CnjApiMock
+            Path: /cnj/{cnj}
+            Method: get
+      Tags:
+        app: cnj-processor
+        type: mock
+
+Outputs:
+  ApiEndpoint:
+    Description: URL da API para processar CNJ
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/cnj"
+  ApiKey:
+    Description: Instruções para obter a API Key
+    Value: "Execute: aws apigateway get-api-keys --include-values --query 'items[?name==`cnj-api-key`].value' --output text"
+  MockApiUrl:
+    Description: URL da API mock para consulta de CNJ
+    Value: !Sub "https://${CnjApiMock}.execute-api.${AWS::Region}.amazonaws.com/dev/cnj"
