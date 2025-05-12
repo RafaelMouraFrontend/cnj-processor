@@ -38,7 +38,9 @@ cd cnj-processor
 ### 2. Instale as dependências
 
 ```bash
+cd .\src\
 npm install
+cd ..
 ```
 
 ### 3. Construa e implante a aplicação
