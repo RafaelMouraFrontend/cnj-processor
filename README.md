@@ -39,6 +39,7 @@ cd cnj-processor
 
 ```bash
 cd .\src\
+npm install aws-xray-sdk
 npm install
 cd ..
 ```
