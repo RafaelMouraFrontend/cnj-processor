@@ -65,7 +65,7 @@ Após a implantação bem-sucedida, o SAM CLI exibirá informações importantes
 Execute o comando exibido nos outputs para obter sua API Key:
 
 ```bash
-aws apigateway get-api-keys --include-values --query 'items[?name==`cnj-api-key`].value' --output text
+aws apigateway get-api-keys --include-values --query 'items[?contains(name, `cnj`)].value' --output text --region us-east-1
 ```
 
 ## Como testar a aplicação
