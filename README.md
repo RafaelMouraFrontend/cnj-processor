@@ -91,15 +91,6 @@ A API retornará uma resposta imediata confirmando que o CNJ foi recebido para p
 }
 ```
 
-### 3. Verifique o resultado no DynamoDB
-
-O processamento é assíncrono. Para verificar o resultado:
-
-```bash
-aws dynamodb get-item \
-  --table-name cnj-resultados-dev \
-  --key '{"cnj": {"S": "1234567-12.2023.1.01.0001"}}'
-```
 
 ## Estrutura do projeto
 
@@ -126,16 +117,8 @@ cnj-processor/
 └── package.json             # Definição de dependências
 ```
 
-## Comportamento do Mock
 
-A API mock retorna diferentes resultados com base no último dígito do número CNJ:
 
-- **0, 4, 8**: Processos em andamento (TJSP)
-- **1, 5, 9**: Processos arquivados (TJRJ)
-- **2, 6**: Processos suspensos (TJMG)
-- **3, 7**: Processos julgados (TRF1)
-
-Você pode testar diferentes cenários enviando CNJs com diferentes dígitos finais.
 
 ## Acessando logs e monitoramento
 
